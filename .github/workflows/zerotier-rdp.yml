@@ -1,0 +1,82 @@
+name: RDP - ZeroTier Secure Connection
+on:
+  workflow_dispatch:
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600 # Maximum runtime of 60 hours
+    steps:
+      - name: Configure Core RDP Settings
+        run: |
+          # Disable NLA and Enable RDP Access
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          netsh advfirewall firewall delete rule name="RDP-ZeroTier"
+          netsh advfirewall firewall add rule name="RDP-ZeroTier" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service -Name TermService -Force
+
+      - name: Create RDP User with Secure Password
+        run: |
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper = [char[]](65..90); Lower = [char[]](97..122); Number = [char[]](48..57); 
+              Special=([char[]](33..47)+[char[]](58..64)+[char[]](91..96) + [char[]](123..126))
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4; $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4; $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          if (-not (Get-LocalUser -Name "RDP")) { Write-Error "User creation failed"; exit 1 }
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+
+      - name: Install ZeroTier
+        run: |
+          $ztUrl = "https://download.zerotier.com/dist/ZeroTier%20One.msi"
+          $installerPath = "$env:TEMP\zerotier.msi"
+          Invoke-WebRequest -Uri $ztUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Establish ZeroTier Connection
+        run: |
+          $NetID = "YOUR_16_DIGIT_NETWORK_ID" # <<< REPLACE THIS WITH YOUR ID
+          $ProgPath = "C:\Program Files (x86)\ZeroTier\ZeroTierOne.exe" # Fixed path for 32-bit install
+          
+          # Join the ZeroTier network
+          & "$ProgPath" -q join $NetID
+          
+          Write-Host "Waiting 30 seconds for the node to register and IP to be assigned."
+          Start-Sleep -Seconds 30
+          
+          # Get the ZeroTier assigned IP address
+          $ztIP = & "$ProgPath" listnetworks | Select-String -Pattern "assigned IP"
+          $ztIP = $ztIP.Matches[0].Groups[1].Value
+          
+          if (-not $ztIP) { Write-Error "ZeroTier IP not assigned. Check ZeroTier Central."; exit 1 }
+          
+          Write-Host "Final IP Address: $ztIP"
+          echo "ZEROTIER_IP=$ztIP" >> $env:GITHUB_ENV
+          
+      - name: Verify RDP Accessibility
+        run: |
+          Write-Host "ZeroTier IP: $env:ZEROTIER_IP"
+          $testResult = Test-NetConnection -ComputerName $env:ZEROTIER_IP -Port 3389
+          if (-not $testResult.TcpTestSucceeded) { Write-Error "TCP connection to RDP port 3389 failed"; exit 1 }
+          Write-Host "TCP connectivity successful!"
+
+      - name: Maintain Connection
+        run: |
+          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "Address: $env:ZEROTIER_IP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: $(echo $env:RDP_CREDS | Select-String -Pattern 'Password: (.+)' | Foreach {$_.Matches.Groups[1].Value})"
+          Write-Host "==================`n"
+          while ($true) {
+              Write-Host "[$((Get-Date))] RDP Active - Use Ctrl+C in workflow to terminate"
+              Start-Sleep -Seconds 300
+          }
