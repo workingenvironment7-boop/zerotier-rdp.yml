@@ -44,7 +44,7 @@ jobs:
 
       - name: Establish ZeroTier Connection
         run: |
-          $NetID = "YOUR_16_DIGIT_NETWORK_ID" # <<< REPLACE THIS WITH YOUR ID
+          $NetID = "f3797ba7a88a9271" # <<< REPLACE THIS WITH YOUR ID
           $ProgPath = "C:\Program Files (x86)\ZeroTier\ZeroTierOne.exe" # Fixed path for 32-bit install
           
           # Join the ZeroTier network
